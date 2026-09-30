@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERLC Map Viewer</title>
+<style>
+  :root{--bg:#0f1218;--panel:#181d27;--line:#2a3140;--text:#e8ecf3;--muted:#8b95a8;--accent:#4c9aff}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+  header{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  h1{font-size:16px;margin:0 6px 0 0;letter-spacing:.3px}
+  .group{display:flex;gap:6px;align-items:center}
+  .group>span{font-size:12px;color:var(--muted);margin-right:2px}
+  button,.btn{background:#212838;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;text-decoration:none}
+  button:hover,.btn:hover{border-color:var(--accent)}
+  button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  label.toggle{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;user-select:none}
+  label.toggle input{accent-color:var(--accent);width:16px;height:16px}
+  #viewport{position:fixed;inset:0;cursor:grab;touch-action:none}
+  #viewport.drag{cursor:grabbing}
+  #map{position:absolute;top:0;left:0;transform-origin:0 0;user-select:none;-webkit-user-drag:none;max-width:none;image-rendering:auto}
+  #status{position:fixed;bottom:12px;left:14px;font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--line);padding:6px 10px;border-radius:8px;z-index:5}
+  #zoom{position:fixed;bottom:12px;right:14px;display:flex;flex-direction:column;gap:6px;z-index:5}
+  #zoom button{width:38px;height:38px;font-size:18px;padding:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>ERLC Map</h1>
+  <div class="group" id="seasons">
+    <span>Season</span>
+    <button data-s="summer" class="active">☀️ Summer</button>
+    <button data-s="fall">🍂 Fall</button>
+    <button data-s="snow">❄️ Winter</button>
+    <button data-s="spring">🌸 Spring</button>
+  </div>
+  <label class="toggle"><input type="checkbox" id="postals" checked> Postal codes &amp; labels</label>
+  <div class="group">
+    <button id="reset">Reset view</button>
+    <button id="full">Fullscreen</button>
+    <a class="btn" id="dl" href="#" target="_blank" rel="noopener">Open image</a>
+  </div>
+</header>
+
+<div id="viewport"><img id="map" alt="ERLC map" draggable="false"></div>
+<div id="status">Loading map…</div>
+<div id="zoom"><button id="zin">+</button><button id="zout">−</button></div>
+
+<script>
+const API = "https://api.erlc.gg/maps";
+// Fallback in case the API is unreachable from the browser (e.g. CORS)
+const BASE = "https://api.erlc.gg/maps/";
+const FALLBACK = ["fall","snow","spring","summer"].flatMap(s => [`${BASE}${s}_blank.png`,`${BASE}${s}_postals.png`]);
+
+let urls = {};            // urls["summer_postals"] = "https://..."
+let season = "summer";    // default
+let scale = 1, tx = 0, ty = 0, minScale = 0.1;
+
+const $ = id => document.getElementById(id);
+const img = $("map"), vp = $("viewport"), status = $("status");
+
+function indexUrls(list){
+  list.forEach(u => {
+    const m = u.match(/\/([a-z]+_(?:blank|postals))\.png/i);
+    if (m) urls[m[1].toLowerCase()] = u;
+  });
+}
+
+async function loadApi(){
+  try {
+    const r = await fetch(API);
+    const j = await r.json();
+    indexUrls(j.maps || []);
+  } catch (e) {
+    console.warn("API fetch failed, using known URLs", e);
+  }
+  if (Object.keys(urls).length < 8) indexUrls(FALLBACK);
+}
+
+function currentKey(){ return `${season}_${$("postals").checked ? "postals" : "blank"}`; }
+
+function apply(keepView){
+  const url = urls[currentKey()];
+  if (!url) return;
+  status.textContent = "Loading " + currentKey().replace("_"," – ") + "…";
+  $("dl").href = url;
+  const tmp = new Image();
+  tmp.onload = () => {
+    const first = !img.src;
+    img.src = url;
+    status.textContent = `${season === "snow" ? "winter" : season} map · ${$("postals").checked ? "postals on" : "postals off"} · scroll to zoom, drag to pan`;
+    if (first || !keepView) fit();
+  };
+  tmp.onerror = () => status.textContent = "Couldn't load that map image.";
+  tmp.src = url;
+}
+
+function render(){ img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; }
+
+function fit(){
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w) return;
+  const vw = innerWidth, vh = innerHeight - 60;
+  scale = Math.min(vw / w, vh / h);
+  minScale = scale * 0.5;
+  tx = (vw - w * scale) / 2;
+  ty = 60 + (vh - h * scale) / 2;
+  render();
+}
+
+function zoomAt(cx, cy, factor){
+  const ns = Math.min(Math.max(scale * factor, minScale), 12);
+  factor = ns / scale;
+  tx = cx - (cx - tx) * factor;
+  ty = cy - (cy - ty) * factor;
+  scale = ns;
+  render();
+}
+
+// Seasons
+$("seasons").addEventListener("click", e => {
+  const b = e.target.closest("button[data-s]");
+  if (!b) return;
+  season = b.dataset.s;
+  document.querySelectorAll("#seasons button").forEach(x => x.classList.toggle("active", x === b));
+  apply(true);
+});
+$("postals").addEventListener("change", () => apply(true));
+$("reset").onclick = fit;
+$("zin").onclick = () => zoomAt(innerWidth/2, innerHeight/2, 1.4);
+$("zout").onclick = () => zoomAt(innerWidth/2, innerHeight/2, 1/1.4);
+$("full").onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+
+// Wheel zoom
+vp.addEventListener("wheel", e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1/1.15); }, {passive:false});
+
+// Drag + pinch via pointer events
+const pts = new Map(); let lastDist = 0;
+vp.addEventListener("pointerdown", e => { vp.setPointerCapture(e.pointerId); pts.set(e.pointerId,{x:e.clientX,y:e.clientY}); vp.classList.add("drag"); lastDist = 0; });
+vp.addEventListener("pointermove", e => {
+  if (!pts.has(e.pointerId)) return;
+  const p = pts.get(e.pointerId);
+  if (pts.size === 1){
+    tx += e.clientX - p.x; ty += e.clientY - p.y; render();
+  } else if (pts.size === 2){
+    pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const [a,b] = [...pts.values()];
+    const d = Math.hypot(a.x-b.x, a.y-b.y);
+    if (lastDist) zoomAt((a.x+b.x)/2, (a.y+b.y)/2, d/lastDist);
+    lastDist = d; return;
+  }
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+});
+const up = e => { pts.delete(e.pointerId); lastDist = 0; if (!pts.size) vp.classList.remove("drag"); };
+vp.addEventListener("pointerup", up); vp.addEventListener("pointercancel", up);
+addEventListener("resize", () => { if (img.naturalWidth) fit(); });
+
+(async () => { await loadApi(); apply(false); })();
+</script>
+</body>
+</html>
